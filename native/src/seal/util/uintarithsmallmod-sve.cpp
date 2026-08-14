@@ -112,14 +112,14 @@ namespace seal
 
 #ifdef __ARM_FEATURE_SVE
         static inline void sve_add_u128(
-            svuint64_t &lo, svuint64_t &hi, svuint64_t addend_lo, svuint64_t addend_hi)
+            svuint64_t &lo, svuint64_t &hi, svuint64_t addend_lo, svuint64_t addend_hi, svbool_t pg)
         {
             // 128-bit addition: (lo, hi) += (addend_lo, addend_hi)
-            svuint64_t sum_lo = svadd_u64_x(svptrue_b64(), lo, addend_lo);
-            svbool_t carry = svcmplt_u64(svptrue_b64(), sum_lo, lo);
+            svuint64_t sum_lo = svadd_u64_x(pg, lo, addend_lo);
+            svbool_t carry = svcmplt_u64(pg, sum_lo, lo);
             svuint64_t carry_val = svsel_u64(carry, svdup_n_u64(1), svdup_n_u64(0));
-            hi = svadd_u64_x(svptrue_b64(), hi, addend_hi);
-            hi = svadd_u64_x(svptrue_b64(), hi, carry_val);
+            hi = svadd_u64_x(pg, hi, addend_hi);
+            hi = svadd_u64_x(pg, hi, carry_val);
             lo = sum_lo;
         }
 #endif
@@ -209,19 +209,19 @@ namespace seal
             {
                 svuint64_t v1_0 = svld1_u64(svptrue_b64(), operand1 + i);
                 svuint64_t v2_0 = svld1_u64(svptrue_b64(), operand2 + i);
-                sve_add_u128(acc_lo, acc_hi, svmul_u64_z(svptrue_b64(), v1_0, v2_0), svmulh_u64_z(svptrue_b64(), v1_0, v2_0));
+                sve_add_u128(acc_lo, acc_hi, svmul_u64_x(svptrue_b64(), v1_0, v2_0), svmulh_u64_x(svptrue_b64(), v1_0, v2_0), svptrue_b64());
 
                 svuint64_t v1_1 = svld1_u64(svptrue_b64(), operand1 + i + N);
                 svuint64_t v2_1 = svld1_u64(svptrue_b64(), operand2 + i + N);
-                sve_add_u128(acc_lo, acc_hi, svmul_u64_z(svptrue_b64(), v1_1, v2_1), svmulh_u64_z(svptrue_b64(), v1_1, v2_1));
+                sve_add_u128(acc_lo, acc_hi, svmul_u64_x(svptrue_b64(), v1_1, v2_1), svmulh_u64_x(svptrue_b64(), v1_1, v2_1), svptrue_b64());
 
                 svuint64_t v1_2 = svld1_u64(svptrue_b64(), operand1 + i + 2 * N);
                 svuint64_t v2_2 = svld1_u64(svptrue_b64(), operand2 + i + 2 * N);
-                sve_add_u128(acc_lo, acc_hi, svmul_u64_z(svptrue_b64(), v1_2, v2_2), svmulh_u64_z(svptrue_b64(), v1_2, v2_2));
+                sve_add_u128(acc_lo, acc_hi, svmul_u64_x(svptrue_b64(), v1_2, v2_2), svmulh_u64_x(svptrue_b64(), v1_2, v2_2), svptrue_b64());
 
                 svuint64_t v1_3 = svld1_u64(svptrue_b64(), operand1 + i + 3 * N);
                 svuint64_t v2_3 = svld1_u64(svptrue_b64(), operand2 + i + 3 * N);
-                sve_add_u128(acc_lo, acc_hi, svmul_u64_z(svptrue_b64(), v1_3, v2_3), svmulh_u64_z(svptrue_b64(), v1_3, v2_3));
+                sve_add_u128(acc_lo, acc_hi, svmul_u64_x(svptrue_b64(), v1_3, v2_3), svmulh_u64_x(svptrue_b64(), v1_3, v2_3), svptrue_b64());
 
                 i += 4 * N;
             }
@@ -231,7 +231,7 @@ namespace seal
             {
                 svuint64_t v1 = svld1_u64(svptrue_b64(), operand1 + i);
                 svuint64_t v2 = svld1_u64(svptrue_b64(), operand2 + i);
-                sve_add_u128(acc_lo, acc_hi, svmul_u64_z(svptrue_b64(), v1, v2), svmulh_u64_z(svptrue_b64(), v1, v2));
+                sve_add_u128(acc_lo, acc_hi, svmul_u64_x(svptrue_b64(), v1, v2), svmulh_u64_x(svptrue_b64(), v1, v2), svptrue_b64());
                 i += N;
             }
 
@@ -241,7 +241,7 @@ namespace seal
                 svbool_t pg = svwhilelt_b64_u64(i, count);
                 svuint64_t v1 = svld1_u64(pg, operand1 + i);
                 svuint64_t v2 = svld1_u64(pg, operand2 + i);
-                sve_add_u128(acc_lo, acc_hi, svmul_u64_z(pg, v1, v2), svmulh_u64_z(pg, v1, v2));
+                sve_add_u128(acc_lo, acc_hi, svmul_u64_x(pg, v1, v2), svmulh_u64_x(pg, v1, v2), pg);
             }
 
             // Horizontal reduction: vector -> scalar 128-bit
