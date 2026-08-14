@@ -43,29 +43,29 @@ namespace seal
             svuint64_t acc_lo, svuint64_t acc_hi,
             svuint64_t v_mod, svuint64_t v_ratio0, svuint64_t v_ratio1, svbool_t pg)
         {
-            svuint64_t r0_hi = svmulh_u64_z(pg, acc_lo, v_ratio0);
-            svuint64_t r1_lo = svmul_u64_z(pg, acc_lo, v_ratio1);
-            svuint64_t r1_hi = svmulh_u64_z(pg, acc_lo, v_ratio1);
+            svuint64_t r0_hi = svmulh_u64_x(pg, acc_lo, v_ratio0);
+            svuint64_t r1_lo = svmul_u64_x(pg, acc_lo, v_ratio1);
+            svuint64_t r1_hi = svmulh_u64_x(pg, acc_lo, v_ratio1);
 
-            svuint64_t tmp1 = svadd_u64_z(pg, r1_lo, r0_hi);
+            svuint64_t tmp1 = svadd_u64_x(pg, r1_lo, r0_hi);
             svbool_t c1 = svcmplt_u64(pg, tmp1, r1_lo);
             svuint64_t c1v = svsel_u64(c1, svdup_n_u64(1), svdup_n_u64(0));
-            svuint64_t tmp3 = svadd_u64_z(pg, r1_hi, c1v);
+            svuint64_t tmp3 = svadd_u64_x(pg, r1_hi, c1v);
 
-            svuint64_t r0p_lo = svmul_u64_z(pg, acc_hi, v_ratio0);
-            svuint64_t r0p_hi = svmulh_u64_z(pg, acc_hi, v_ratio0);
+            svuint64_t r0p_lo = svmul_u64_x(pg, acc_hi, v_ratio0);
+            svuint64_t r0p_hi = svmulh_u64_x(pg, acc_hi, v_ratio0);
 
-            svuint64_t tmp1_new = svadd_u64_z(pg, tmp1, r0p_lo);
+            svuint64_t tmp1_new = svadd_u64_x(pg, tmp1, r0p_lo);
             svbool_t c2 = svcmplt_u64(pg, tmp1_new, tmp1);
             svuint64_t c2v = svsel_u64(c2, svdup_n_u64(1), svdup_n_u64(0));
-            svuint64_t carry_val = svadd_u64_z(pg, r0p_hi, c2v);
+            svuint64_t carry_val = svadd_u64_x(pg, r0p_hi, c2v);
 
-            svuint64_t q_est = svmul_u64_z(pg, acc_hi, v_ratio1);
-            q_est = svadd_u64_z(pg, q_est, tmp3);
-            q_est = svadd_u64_z(pg, q_est, carry_val);
+            svuint64_t q_est = svmul_u64_x(pg, acc_hi, v_ratio1);
+            q_est = svadd_u64_x(pg, q_est, tmp3);
+            q_est = svadd_u64_x(pg, q_est, carry_val);
 
-            svuint64_t prod = svmul_u64_z(pg, q_est, v_mod);
-            svuint64_t res = svsub_u64_z(pg, acc_lo, prod);
+            svuint64_t prod = svmul_u64_x(pg, q_est, v_mod);
+            svuint64_t res = svsub_u64_x(pg, acc_lo, prod);
 
             svbool_t ge = svcmpge_u64(pg, res, v_mod);
             return svsub_u64_m(ge, res, v_mod);
