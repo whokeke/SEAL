@@ -14,14 +14,47 @@
 namespace {
     // SVE helper: 128-bit addition (lo, hi) += (addend_lo, addend_hi) per-lane
     static inline void sve_add_u128(
-        svuint64_t &lo, svuint64_t &hi, svuint64_t addend_lo, svuint64_t addend_hi)
+        svuint64_t &lo, svuint64_t &hi, svuint64_t addend_lo, svuint64_t addend_hi, svbool_t pg)
     {
-        svuint64_t sum_lo = svadd_u64_x(svptrue_b64(), lo, addend_lo);
-        svbool_t carry = svcmplt_u64(svptrue_b64(), sum_lo, lo);
+        svuint64_t sum_lo = svadd_u64_x(pg, lo, addend_lo);
+        svbool_t carry = svcmplt_u64(pg, sum_lo, lo);
         svuint64_t carry_val = svsel_u64(carry, svdup_n_u64(1), svdup_n_u64(0));
-        hi = svadd_u64_x(svptrue_b64(), hi, addend_hi);
-        hi = svadd_u64_x(svptrue_b64(), hi, carry_val);
+        hi = svadd_u64_x(pg, hi, addend_hi);
+        hi = svadd_u64_x(pg, hi, carry_val);
         lo = sum_lo;
+    }
+
+    // SVE helper: 128-bit Barrett reduction of (acc_lo, acc_hi) mod modulus
+    static inline svuint64_t sve_barrett_reduce_128(
+        svuint64_t acc_lo, svuint64_t acc_hi,
+        svuint64_t v_mod, svuint64_t v_ratio0, svuint64_t v_ratio1, svbool_t pg)
+    {
+        svuint64_t r0_hi = svmulh_u64_x(pg, acc_lo, v_ratio0);
+        svuint64_t r1_lo = svmul_u64_x(pg, acc_lo, v_ratio1);
+        svuint64_t r1_hi = svmulh_u64_x(pg, acc_lo, v_ratio1);
+
+        svuint64_t tmp1 = svadd_u64_x(pg, r1_lo, r0_hi);
+        svbool_t c1 = svcmplt_u64(pg, tmp1, r1_lo);
+        svuint64_t c1v = svsel_u64(c1, svdup_n_u64(1), svdup_n_u64(0));
+        svuint64_t tmp3 = svadd_u64_x(pg, r1_hi, c1v);
+
+        svuint64_t r0p_lo = svmul_u64_x(pg, acc_hi, v_ratio0);
+        svuint64_t r0p_hi = svmulh_u64_x(pg, acc_hi, v_ratio0);
+
+        svuint64_t tmp1_new = svadd_u64_x(pg, tmp1, r0p_lo);
+        svbool_t c2 = svcmplt_u64(pg, tmp1_new, tmp1);
+        svuint64_t c2v = svsel_u64(c2, svdup_n_u64(1), svdup_n_u64(0));
+        svuint64_t carry_val = svadd_u64_x(pg, r0p_hi, c2v);
+
+        svuint64_t q_est = svmul_u64_x(pg, acc_hi, v_ratio1);
+        q_est = svadd_u64_x(pg, q_est, tmp3);
+        q_est = svadd_u64_x(pg, q_est, carry_val);
+
+        svuint64_t prod = svmul_u64_x(pg, q_est, v_mod);
+        svuint64_t res = svsub_u64_x(pg, acc_lo, prod);
+
+        svbool_t ge = svcmpge_u64(pg, res, v_mod);
+        return svsub_u64_m(ge, res, v_mod);
     }
 } // anonymous namespace
 #endif
@@ -554,39 +587,13 @@ namespace seal
                         svuint64_t v_temp = svld1_gather_u64index_u64(svptrue_b64(), temp_base, v_indices);
 
                         // 128-bit multiply-accumulate (no carry flag dependency!)
-                        svuint64_t prod_lo = svmul_u64_z(svptrue_b64(), v_temp, bc_i);
-                        svuint64_t prod_hi = svmulh_u64_z(svptrue_b64(), v_temp, bc_i);
-                        sve_add_u128(acc_lo, acc_hi, prod_lo, prod_hi);
+                        svuint64_t prod_lo = svmul_u64_x(svptrue_b64(), v_temp, bc_i);
+                        svuint64_t prod_hi = svmulh_u64_x(svptrue_b64(), v_temp, bc_i);
+                        sve_add_u128(acc_lo, acc_hi, prod_lo, prod_hi, svptrue_b64());
                     }
 
                     // SVE Barrett reduce 128-bit (acc_lo, acc_hi) per lane
-                    svuint64_t r0_hi = svmulh_u64_z(svptrue_b64(), acc_lo, sv_ratio0);
-                    svuint64_t r1_lo = svmul_u64_z(svptrue_b64(), acc_lo, sv_ratio1);
-                    svuint64_t r1_hi = svmulh_u64_z(svptrue_b64(), acc_lo, sv_ratio1);
-
-                    svuint64_t tmp1 = svadd_u64_z(svptrue_b64(), r1_lo, r0_hi);
-                    svbool_t c1 = svcmplt_u64(svptrue_b64(), tmp1, r1_lo);
-                    svuint64_t c1v = svsel_u64(c1, svdup_n_u64(1), svdup_n_u64(0));
-                    svuint64_t tmp3 = svadd_u64_z(svptrue_b64(), r1_hi, c1v);
-
-                    svuint64_t r0p_lo = svmul_u64_z(svptrue_b64(), acc_hi, sv_ratio0);
-                    svuint64_t r0p_hi = svmulh_u64_z(svptrue_b64(), acc_hi, sv_ratio0);
-
-                    svuint64_t tmp1_new = svadd_u64_z(svptrue_b64(), tmp1, r0p_lo);
-                    svbool_t c2 = svcmplt_u64(svptrue_b64(), tmp1_new, tmp1);
-                    svuint64_t c2v = svsel_u64(c2, svdup_n_u64(1), svdup_n_u64(0));
-                    svuint64_t carry_val = svadd_u64_z(svptrue_b64(), r0p_hi, c2v);
-
-                    svuint64_t q_est = svmul_u64_z(svptrue_b64(), acc_hi, sv_ratio1);
-                    q_est = svadd_u64_z(svptrue_b64(), q_est, tmp3);
-                    q_est = svadd_u64_z(svptrue_b64(), q_est, carry_val);
-
-                    svuint64_t prod = svmul_u64_z(svptrue_b64(), q_est, sv_mod);
-                    svuint64_t res = svsub_u64_z(svptrue_b64(), acc_lo, prod);
-
-                    // Conditional subtract
-                    svbool_t ge = svcmpge_u64(svptrue_b64(), res, sv_mod);
-                    res = svsub_u64_m(ge, res, sv_mod);
+                    svuint64_t res = sve_barrett_reduce_128(acc_lo, acc_hi, sv_mod, sv_ratio0, sv_ratio1, svptrue_b64());
 
                     svst1_u64(svptrue_b64(), out_ptr + j, res);
                     j += N;
@@ -604,32 +611,13 @@ namespace seal
                         svuint64_t bc_i = svdup_n_u64(base_change_ptr[i]);
                         svuint64_t v_indices = svindex_u64(j * ibase_size + i, ibase_size);
                         svuint64_t v_temp = svld1_gather_u64index_u64(pg, temp_base, v_indices);
-                        svuint64_t prod_lo = svmul_u64_z(pg, v_temp, bc_i);
-                        svuint64_t prod_hi = svmulh_u64_z(pg, v_temp, bc_i);
-                        sve_add_u128(acc_lo, acc_hi, prod_lo, prod_hi);
+                        svuint64_t prod_lo = svmul_u64_x(pg, v_temp, bc_i);
+                        svuint64_t prod_hi = svmulh_u64_x(pg, v_temp, bc_i);
+                        sve_add_u128(acc_lo, acc_hi, prod_lo, prod_hi, pg);
                     }
 
                     // Barrett reduce
-                    svuint64_t r0_hi = svmulh_u64_z(pg, acc_lo, sv_ratio0);
-                    svuint64_t r1_lo = svmul_u64_z(pg, acc_lo, sv_ratio1);
-                    svuint64_t r1_hi = svmulh_u64_z(pg, acc_lo, sv_ratio1);
-                    svuint64_t tmp1 = svadd_u64_z(pg, r1_lo, r0_hi);
-                    svbool_t c1 = svcmplt_u64(pg, tmp1, r1_lo);
-                    svuint64_t c1v = svsel_u64(c1, svdup_n_u64(1), svdup_n_u64(0));
-                    svuint64_t tmp3 = svadd_u64_z(pg, r1_hi, c1v);
-                    svuint64_t r0p_lo = svmul_u64_z(pg, acc_hi, sv_ratio0);
-                    svuint64_t r0p_hi = svmulh_u64_z(pg, acc_hi, sv_ratio0);
-                    svuint64_t tmp1_new = svadd_u64_z(pg, tmp1, r0p_lo);
-                    svbool_t c2 = svcmplt_u64(pg, tmp1_new, tmp1);
-                    svuint64_t c2v = svsel_u64(c2, svdup_n_u64(1), svdup_n_u64(0));
-                    svuint64_t carry_val = svadd_u64_z(pg, r0p_hi, c2v);
-                    svuint64_t q_est = svmul_u64_z(pg, acc_hi, sv_ratio1);
-                    q_est = svadd_u64_z(pg, q_est, tmp3);
-                    q_est = svadd_u64_z(pg, q_est, carry_val);
-                    svuint64_t prod = svmul_u64_z(pg, q_est, sv_mod);
-                    svuint64_t res = svsub_u64_z(pg, acc_lo, prod);
-                    svbool_t ge = svcmpge_u64(pg, res, sv_mod);
-                    res = svsub_u64_m(ge, res, sv_mod);
+                    svuint64_t res = sve_barrett_reduce_128(acc_lo, acc_hi, sv_mod, sv_ratio0, sv_ratio1, pg);
                     svst1_u64(pg, out_ptr + j, res);
                 }
             }
@@ -1194,6 +1182,11 @@ namespace seal
                 // SVE constants
                 svuint64_t sv_mod = svdup_n_u64(mod_val);
                 svuint64_t sv_m_sk = svdup_n_u64(m_sk_.value());
+                svuint64_t sv_div_2 = svdup_n_u64(m_sk_div_2);
+                svuint64_t sv_prod_op = svdup_n_u64(local_prod.operand);
+                svuint64_t sv_prod_q = svdup_n_u64(local_prod.quotient);
+                svuint64_t sv_neg_op = svdup_n_u64(local_neg_prod.operand);
+                svuint64_t sv_neg_q = svdup_n_u64(local_neg_prod.quotient);
 
                 const uint64_t N = svcntd();
                 const svbool_t ptrue = svptrue_b64();
@@ -1202,15 +1195,15 @@ namespace seal
                 for (; j < full; j += N)
                 {
                     svuint64_t v_alpha = svld1_u64(ptrue, alpha_ptr + j);
-                    svbool_t need_neg = svcmpgt_u64(ptrue, v_alpha, svdup_n_u64(m_sk_div_2));
+                    svbool_t need_neg = svcmpgt_u64(ptrue, v_alpha, sv_div_2);
                     svuint64_t v_dest = svld1_u64(ptrue, dest_ptr + j);
                     svuint64_t v_neg_alpha = svsub_u64_x(ptrue, sv_m_sk, v_alpha);
-                    svuint64_t v_neg_hi = svmulh_u64_x(ptrue, v_neg_alpha, svdup_n_u64(local_prod.quotient));
-                    svuint64_t v_neg_lo = svmul_u64_x(ptrue, v_neg_alpha, svdup_n_u64(local_prod.operand));
+                    svuint64_t v_neg_hi = svmulh_u64_x(ptrue, v_neg_alpha, sv_prod_q);
+                    svuint64_t v_neg_lo = svmul_u64_x(ptrue, v_neg_alpha, sv_prod_op);
                     v_neg_lo = svmls_u64_x(ptrue, v_neg_lo, sv_mod, v_neg_hi);
                     svuint64_t v_neg_result = svadd_u64_x(ptrue, v_neg_lo, v_dest);
-                    svuint64_t v_pos_hi = svmulh_u64_x(ptrue, v_alpha, svdup_n_u64(local_neg_prod.quotient));
-                    svuint64_t v_pos_lo = svmul_u64_x(ptrue, v_alpha, svdup_n_u64(local_neg_prod.operand));
+                    svuint64_t v_pos_hi = svmulh_u64_x(ptrue, v_alpha, sv_neg_q);
+                    svuint64_t v_pos_lo = svmul_u64_x(ptrue, v_alpha, sv_neg_op);
                     v_pos_lo = svmls_u64_x(ptrue, v_pos_lo, sv_mod, v_pos_hi);
                     svuint64_t v_pos_result = svadd_u64_x(ptrue, v_pos_lo, v_dest);
                     svuint64_t v_result = svsel_u64(need_neg, v_neg_result, v_pos_result);
@@ -1222,15 +1215,15 @@ namespace seal
                 {
                     svbool_t pg = svwhilelt_b64(j, coeff_count_);
                     svuint64_t v_alpha = svld1_u64(pg, alpha_ptr + j);
-                    svbool_t need_neg = svcmpgt_u64(pg, v_alpha, svdup_n_u64(m_sk_div_2));
+                    svbool_t need_neg = svcmpgt_u64(pg, v_alpha, sv_div_2);
                     svuint64_t v_dest = svld1_u64(pg, dest_ptr + j);
                     svuint64_t v_neg_alpha = svsub_u64_z(pg, sv_m_sk, v_alpha);
-                    svuint64_t v_neg_hi = svmulh_u64_x(pg, v_neg_alpha, svdup_n_u64(local_prod.quotient));
-                    svuint64_t v_neg_lo = svmul_u64_x(pg, v_neg_alpha, svdup_n_u64(local_prod.operand));
+                    svuint64_t v_neg_hi = svmulh_u64_x(pg, v_neg_alpha, sv_prod_q);
+                    svuint64_t v_neg_lo = svmul_u64_x(pg, v_neg_alpha, sv_prod_op);
                     v_neg_lo = svmls_u64_x(pg, v_neg_lo, sv_mod, v_neg_hi);
                     svuint64_t v_neg_result = svadd_u64_z(pg, v_neg_lo, v_dest);
-                    svuint64_t v_pos_hi = svmulh_u64_x(pg, v_alpha, svdup_n_u64(local_neg_prod.quotient));
-                    svuint64_t v_pos_lo = svmul_u64_x(pg, v_alpha, svdup_n_u64(local_neg_prod.operand));
+                    svuint64_t v_pos_hi = svmulh_u64_x(pg, v_alpha, sv_neg_q);
+                    svuint64_t v_pos_lo = svmul_u64_x(pg, v_alpha, sv_neg_op);
                     v_pos_lo = svmls_u64_x(pg, v_pos_lo, sv_mod, v_pos_hi);
                     svuint64_t v_pos_result = svadd_u64_z(pg, v_pos_lo, v_dest);
                     svuint64_t v_result = svsel_u64(need_neg, v_neg_result, v_pos_result);
@@ -1326,6 +1319,9 @@ namespace seal
                 svuint64_t sv_inv_m_tilde_q = svdup_n_u64(inv_m_tilde_mod_Bsk_[i].quotient);
                 svuint64_t sv_prod_q = svdup_n_u64(local_prod_q.operand);
                 svuint64_t sv_prod_q_q = svdup_n_u64(local_prod_q.quotient);
+                svuint64_t sv_div_2 = svdup_n_u64(m_tilde_div_2);
+                svuint64_t sv_fix_val = svdup_n_u64(mod_val - m_tilde_.value());
+                svuint64_t sv_zero = svdup_n_u64(0);
 
                 const uint64_t N = svcntd();
                 const svbool_t ptrue = svptrue_b64();
@@ -1334,8 +1330,8 @@ namespace seal
                 for (; j < full; j += N)
                 {
                     svuint64_t v_rmt = svld1_u64(ptrue, r_m_tilde_ptr + j);
-                    svbool_t need_fix = svcmpge_u64(ptrue, v_rmt, svdup_n_u64(m_tilde_div_2));
-                    svuint64_t v_fix = svsel_u64(need_fix, svdup_n_u64(mod_val - m_tilde_.value()), svdup_n_u64(0));
+                    svbool_t need_fix = svcmpge_u64(ptrue, v_rmt, sv_div_2);
+                    svuint64_t v_fix = svsel_u64(need_fix, sv_fix_val, sv_zero);
                     v_rmt = svadd_u64_x(ptrue, v_rmt, v_fix);
                     svuint64_t v_in = svld1_u64(ptrue, in_ptr + j);
                     svuint64_t v_prod_hi = svmulh_u64_x(ptrue, v_rmt, sv_prod_q_q);
@@ -1353,8 +1349,8 @@ namespace seal
                 {
                     svbool_t pg = svwhilelt_b64(j, coeff_count_);
                     svuint64_t v_rmt = svld1_u64(pg, r_m_tilde_ptr + j);
-                    svbool_t need_fix = svcmpge_u64(pg, v_rmt, svdup_n_u64(m_tilde_div_2));
-                    svuint64_t v_fix = svsel_u64(need_fix, svdup_n_u64(mod_val - m_tilde_.value()), svdup_n_u64(0));
+                    svbool_t need_fix = svcmpge_u64(pg, v_rmt, sv_div_2);
+                    svuint64_t v_fix = svsel_u64(need_fix, sv_fix_val, sv_zero);
                     v_rmt = svadd_u64_z(pg, v_rmt, v_fix);
                     svuint64_t v_in = svld1_u64(pg, in_ptr + j);
                     svuint64_t v_prod_hi = svmulh_u64_x(pg, v_rmt, sv_prod_q_q);
