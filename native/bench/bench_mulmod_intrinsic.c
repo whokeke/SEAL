@@ -223,6 +223,108 @@ static void sve32_4x_mulmod(const uint64_t *in, uint64_t *out,
     }
 }
 
+/* ---- SVE32 N-x interleave (generic: load-all, mulhi-all, mulmod-all) ---- */
+/* SVE types can't be in arrays, so we generate code that:
+   1) loads all kx vectors (independent loads)
+   2) computes mulhi for all kx (carry chains overlap with each other's multiplies)
+   3) finishes mulmod for each
+   This ordering lets the CPU pipeline multiplies from iter k+1 while
+   iter k's carry chain is still running. */
+
+#define SVE32_X_MULMOD(suffix, kx) \
+static void sve32_##suffix##_mulmod(const uint64_t *in, uint64_t *out, \
+                            uint64_t op, uint64_t q, uint64_t p, int n) { \
+    svbool_t pg = svptrue_b64(); \
+    svuint64_t sv_op = svdup_n_u64(op); \
+    svuint64_t sv_q  = svdup_n_u64(q); \
+    svuint64_t sv_p  = svdup_n_u64(p); \
+    svuint32_t q32 = svreinterpret_u32_u64(sv_q); \
+    svuint64_t q_hi = svlsr_n_u64_x(pg, sv_q, 32); \
+    svuint32_t q_hi32 = svreinterpret_u32_u64(q_hi); \
+    svuint64_t mask32 = svdup_n_u64(0xFFFFFFFF); \
+    svuint64_t one = svdup_n_u64(1); \
+    svuint64_t zero = svdup_n_u64(0); \
+    int N = svcntd(); \
+    int full = (n / (kx*N)) * (kx*N); \
+    int i = 0; \
+    for (; i < full; i += kx*N) { \
+        /* Phase 1: load all kx vectors + compute mulhi (interleaved) */ \
+        /* The sve32_mulhi call is inlined, so the compiler sees the
+           multiplies from different iterations as independent and can
+           pipeline them. Loading in the sve32_mulhi call arg means
+           the load is also independent. */ \
+        svuint64_t h0 = sve32_mulhi(pg, svld1_u64(pg, in + i), sv_q, q32, q_hi32, mask32, one, zero); \
+        svuint64_t h1 = sve32_mulhi(pg, svld1_u64(pg, in + i + N), sv_q, q32, q_hi32, mask32, one, zero); \
+        svuint64_t h2, h3, h4, h5, h6, h7; \
+        if (kx >= 3) h2 = sve32_mulhi(pg, svld1_u64(pg, in + i + 2*N), sv_q, q32, q_hi32, mask32, one, zero); \
+        if (kx >= 4) h3 = sve32_mulhi(pg, svld1_u64(pg, in + i + 3*N), sv_q, q32, q_hi32, mask32, one, zero); \
+        if (kx >= 5) h4 = sve32_mulhi(pg, svld1_u64(pg, in + i + 4*N), sv_q, q32, q_hi32, mask32, one, zero); \
+        if (kx >= 6) h5 = sve32_mulhi(pg, svld1_u64(pg, in + i + 5*N), sv_q, q32, q_hi32, mask32, one, zero); \
+        if (kx >= 7) h6 = sve32_mulhi(pg, svld1_u64(pg, in + i + 6*N), sv_q, q32, q_hi32, mask32, one, zero); \
+        if (kx >= 8) h7 = sve32_mulhi(pg, svld1_u64(pg, in + i + 7*N), sv_q, q32, q_hi32, mask32, one, zero); \
+        /* Phase 2: finish mulmod for each */ \
+        { svuint64_t lo = svmul_u64_x(pg, svld1_u64(pg, in + i), sv_op); \
+          svuint64_t r = svmls_u64_x(pg, lo, sv_p, h0); \
+          svbool_t ge = svcmpge_u64(pg, r, sv_p); r = svsub_u64_m(ge, r, sv_p); \
+          svst1_u64(pg, out + i, r); } \
+        { svuint64_t lo = svmul_u64_x(pg, svld1_u64(pg, in + i + N), sv_op); \
+          svuint64_t r = svmls_u64_x(pg, lo, sv_p, h1); \
+          svbool_t ge = svcmpge_u64(pg, r, sv_p); r = svsub_u64_m(ge, r, sv_p); \
+          svst1_u64(pg, out + i + N, r); } \
+        if (kx >= 3) { svuint64_t lo = svmul_u64_x(pg, svld1_u64(pg, in + i + 2*N), sv_op); \
+          svuint64_t r = svmls_u64_x(pg, lo, sv_p, h2); \
+          svbool_t ge = svcmpge_u64(pg, r, sv_p); r = svsub_u64_m(ge, r, sv_p); \
+          svst1_u64(pg, out + i + 2*N, r); } \
+        if (kx >= 4) { svuint64_t lo = svmul_u64_x(pg, svld1_u64(pg, in + i + 3*N), sv_op); \
+          svuint64_t r = svmls_u64_x(pg, lo, sv_p, h3); \
+          svbool_t ge = svcmpge_u64(pg, r, sv_p); r = svsub_u64_m(ge, r, sv_p); \
+          svst1_u64(pg, out + i + 3*N, r); } \
+        if (kx >= 5) { svuint64_t lo = svmul_u64_x(pg, svld1_u64(pg, in + i + 4*N), sv_op); \
+          svuint64_t r = svmls_u64_x(pg, lo, sv_p, h4); \
+          svbool_t ge = svcmpge_u64(pg, r, sv_p); r = svsub_u64_m(ge, r, sv_p); \
+          svst1_u64(pg, out + i + 4*N, r); } \
+        if (kx >= 6) { svuint64_t lo = svmul_u64_x(pg, svld1_u64(pg, in + i + 5*N), sv_op); \
+          svuint64_t r = svmls_u64_x(pg, lo, sv_p, h5); \
+          svbool_t ge = svcmpge_u64(pg, r, sv_p); r = svsub_u64_m(ge, r, sv_p); \
+          svst1_u64(pg, out + i + 5*N, r); } \
+        if (kx >= 7) { svuint64_t lo = svmul_u64_x(pg, svld1_u64(pg, in + i + 6*N), sv_op); \
+          svuint64_t r = svmls_u64_x(pg, lo, sv_p, h6); \
+          svbool_t ge = svcmpge_u64(pg, r, sv_p); r = svsub_u64_m(ge, r, sv_p); \
+          svst1_u64(pg, out + i + 6*N, r); } \
+        if (kx >= 8) { svuint64_t lo = svmul_u64_x(pg, svld1_u64(pg, in + i + 7*N), sv_op); \
+          svuint64_t r = svmls_u64_x(pg, lo, sv_p, h7); \
+          svbool_t ge = svcmpge_u64(pg, r, sv_p); r = svsub_u64_m(ge, r, sv_p); \
+          svst1_u64(pg, out + i + 7*N, r); } \
+    } \
+    for (; i + N <= n; i += N) { \
+        svuint64_t xx = svld1_u64(pg, in + i); \
+        svuint64_t hi = sve32_mulhi(pg, xx, sv_q, q32, q_hi32, mask32, one, zero); \
+        svuint64_t lo = svmul_u64_x(pg, xx, sv_op); \
+        svuint64_t r  = svmls_u64_x(pg, lo, sv_p, hi); \
+        svbool_t ge = svcmpge_u64(pg, r, sv_p); \
+        r = svsub_u64_m(ge, r, sv_p); \
+        svst1_u64(pg, out + i, r); \
+    } \
+    if (i < n) { \
+        svbool_t pg2 = svwhilelt_b64(i, n); \
+        svuint64_t xx = svld1_u64(pg2, in + i); \
+        svuint64_t hi = sve32_mulhi(pg2, xx, sv_q, q32, q_hi32, mask32, one, zero); \
+        svuint64_t lo = svmul_u64_x(pg2, xx, sv_op); \
+        svuint64_t r  = svmls_u64_x(pg2, lo, sv_p, hi); \
+        svbool_t ge = svcmpge_u64(pg2, r, sv_p); \
+        r = svsub_u64_m(ge, r, sv_p); \
+        svst1_u64(pg2, out + i, r); \
+    } \
+}
+
+/* Remove old hand-written 2x and 4x, replace with macro versions */
+/* (the macro versions are below; the old ones are already removed) */
+
+SVE32_X_MULMOD(3x, 3)
+SVE32_X_MULMOD(5x, 5)
+SVE32_X_MULMOD(6x, 6)
+SVE32_X_MULMOD(8x, 8)
+
 /* ---- Scalar (inline asm umulh) ---- */
 static inline uint64_t umulh(uint64_t a, uint64_t b) {
     uint64_t r; __asm__ volatile("umulh %0, %1, %2" : "=r"(r) : "r"(a), "r"(b)); return r;
@@ -266,9 +368,13 @@ int main() {
         {"scalar (inline asm)",       scalar_mulmod},
         {"scalar (__uint128_t)",      scalar_u128_mulmod},
         {"SVE native (intrinsic)",    sve_mulmod},
-        {"SVE32 (no interleave)",     sve32_mulmod},
-        {"SVE32 (2x interleave)",      sve32_2x_mulmod},
-        {"SVE32 (4x interleave)",     sve32_4x_mulmod},
+        {"SVE32 (1x)",                sve32_mulmod},
+        {"SVE32 (2x)",                sve32_2x_mulmod},
+        {"SVE32 (3x)",                sve32_3x_mulmod},
+        {"SVE32 (4x)",                sve32_4x_mulmod},
+        {"SVE32 (5x)",                sve32_5x_mulmod},
+        {"SVE32 (6x)",                sve32_6x_mulmod},
+        {"SVE32 (8x)",                sve32_8x_mulmod},
     };
 
     printf("=== Lazy Barrett mulmod benchmark (SVE intrinsic) ===\n");
@@ -276,7 +382,7 @@ int main() {
            N_ELEMS, ITERS, svcntb()*8, (int)svcntd());
 
     double base = 0;
-    for (int t = 0; t < 6; t++) {
+    for (int t = 0; t < 10; t++) {
         tests[t].fn(in, out, op, q, p, N_ELEMS);
         uint64_t t0 = cntvct();
         for (int j = 0; j < ITERS; j++)
@@ -290,10 +396,11 @@ int main() {
     /* correctness */
     uint64_t ref[N_ELEMS], v[N_ELEMS];
     scalar_mulmod(in, ref, op, q, p, N_ELEMS);
-    const char *names[] = {"", "", "SVE", "SVE32", "SVE32-2x", "SVE32-4x"};
-    fn_t fns[] = {NULL, NULL, sve_mulmod, sve32_mulmod, sve32_2x_mulmod, sve32_4x_mulmod};
+    const char *names[] = {"", "", "SVE", "1x", "2x", "3x", "4x", "5x", "6x", "8x"};
+    fn_t fns[] = {NULL, NULL, sve_mulmod, sve32_mulmod, sve32_2x_mulmod, sve32_3x_mulmod,
+                  sve32_4x_mulmod, sve32_5x_mulmod, sve32_6x_mulmod, sve32_8x_mulmod};
     int ok = 1;
-    for (int t = 2; t < 6; t++) {
+    for (int t = 2; t < 10; t++) {
         fns[t](in, v, op, q, p, N_ELEMS);
         for (int i = 0; i < N_ELEMS; i++) {
             if (v[i] != ref[i]) { printf("    MISMATCH %s[%d]\n", names[t], i); ok=0; break; }
