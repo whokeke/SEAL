@@ -1,3 +1,12 @@
+// Benchmark: scalar mulmod — schoolbook vs __uint128_t vs inline asm
+// Compare 3 scalar mulhi implementations:
+//   (1) schoolbook (32-bit decomposition, ~16 instructions)
+//   (2) __uint128_t (compiler generates umulh, 1 instruction)
+//   (3) inline asm (explicit umulh instruction)
+//
+// Build: gcc -O3 -march=armv9-a -D_GNU_SOURCE -o bench_umulh_fix bench_umulh_fix.c
+// Run:   taskset -c 1 ./bench_umulh_fix
+
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
