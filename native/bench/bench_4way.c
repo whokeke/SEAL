@@ -2,10 +2,22 @@
 // (1) scalar-schoolbook  (2) scalar-int128  (3) vector-schoolbook  (4) vector-int128(svmulh)
 //
 // Build with GCC 15:
-//   /home/hukeke/spec/toolchains/gcc-15/bin/aarch64-unknown-linux-gnu-gcc -O3 -march=armv9-a+sve2 -D_GNU_SOURCE -o bench_4way_gcc15 bench_4way.c
-// Build with LLVM 22:
-//   /home/hukeke/spec/toolchains/LLVM-22.1.8-release/bin/clang -O3 -march=armv9-a+sve2 -D_GNU_SOURCE -o bench_4way_llvm22 bench_4way.c
+//   /home/hukeke/spec/toolchains/gcc-15/bin/aarch64-unknown-linux-gnu-gcc \
+//     -O3 -march=armv9-a+sve2 -D_GNU_SOURCE -o bench_4way_gcc15 bench_4way.c
 //
+// Build with LLVM 22:
+//   /home/hukeke/spec/toolchains/LLVM-22.1.8-release/bin/clang \
+//     -O3 -march=armv9-a+sve2 -D_GNU_SOURCE \
+//     --gcc-toolchain=/home/hukeke/spec/toolchains/gcc-15 \
+//     -o bench_4way_llvm22 bench_4way.c
+//
+// Generate assembly:
+//   Add -S -o bench_4way_gcc15.s  (GCC)
+//   Add -S -o bench_4way_llvm22.s (LLVM)
+//
+// Run:
+//   taskset -c 1 ./bench_4way_gcc15
+//   taskset -c 1 ./bench_4way_llvm22
 // Also generate assembly:
 //   ... -S -o bench_4way_gcc15.s
 //   ... -S -o bench_4way_llvm22.s
