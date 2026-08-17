@@ -27,6 +27,13 @@ static inline uint64_t mulhi_u128(uint64_t a, uint64_t b) {
     return (uint64_t)((unsigned __int128)a * b >> 64);
 }
 
+/* 嵌入式汇编: 直接 umulh */
+static inline uint64_t mulhi_inline_asm(uint64_t a, uint64_t b) {
+    uint64_t r;
+    __asm__ volatile("umulh %0, %1, %2" : "=r"(r) : "r"(a), "r"(b));
+    return r;
+}
+
 /* 标量 lazy Barrett mulmod */
 #define MULMOD_FUNC(name, mulhi_fn) \
 static void name(const uint64_t *in, uint64_t *out, uint64_t op, uint64_t q, uint64_t p, int n) { \
@@ -40,6 +47,7 @@ static void name(const uint64_t *in, uint64_t *out, uint64_t op, uint64_t q, uin
 
 MULMOD_FUNC(mulmod_schoolbook, mulhi_schoolbook)
 MULMOD_FUNC(mulmod_u128, mulhi_u128)
+MULMOD_FUNC(mulmod_asm, mulhi_inline_asm)
 
 int main() {
     cpu_set_t cs; CPU_ZERO(&cs); CPU_SET(1, &cs);
@@ -53,14 +61,15 @@ int main() {
 
     typedef void (*fn_t)(const uint64_t*, uint64_t*, uint64_t, uint64_t, uint64_t, int);
     struct { const char *name; fn_t fn; } tests[] = {
-        {"schoolbook (修复前)", mulmod_schoolbook},
-        {"__uint128_t (修复后)", mulmod_u128},
+        {"schoolbook (16 inst)",      mulmod_schoolbook},
+        {"__uint128_t (umulh)",       mulmod_u128},
+        {"inline asm (umulh)",        mulmod_asm},
     };
 
-    printf("=== 标量 mulmod: schoolbook vs __uint128_t ===\n");
+    printf("=== scalar mulmod: schoolbook vs __uint128_t vs inline asm ===\n");
     printf("    N=%d ITERS=%d CPU=2.3GHz GCC-12 -O3\n\n", N_ELEMS, ITERS);
 
-    for (int t = 0; t < 2; t++) {
+    for (int t = 0; t < 3; t++) {
         tests[t].fn(in, out, op, q, p, N_ELEMS);
         uint64_t t0 = cntvct();
         for (int j = 0; j < ITERS; j++)
@@ -70,12 +79,12 @@ int main() {
         printf("    %-25s %7.3f cyc/elem\n", tests[t].name, cyc);
     }
 
-    // correctness
-    uint64_t r0[N_ELEMS], r1[N_ELEMS];
+    uint64_t r0[N_ELEMS], r1[N_ELEMS], r2[N_ELEMS];
     mulmod_schoolbook(in, r0, op, q, p, N_ELEMS);
     mulmod_u128(in, r1, op, q, p, N_ELEMS);
+    mulmod_asm(in, r2, op, q, p, N_ELEMS);
     int ok = 1;
-    for (int i = 0; i < N_ELEMS; i++) if (r0[i] != r1[i]) { ok = 0; break; }
+    for (int i = 0; i < N_ELEMS; i++) if (r0[i] != r1[i] || r1[i] != r2[i]) { ok = 0; break; }
     printf("\n    Correctness: %s\n", ok ? "MATCH" : "FAILED");
     return 0;
 }
