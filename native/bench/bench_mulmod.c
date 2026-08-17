@@ -224,7 +224,7 @@ static void sve32_4x_mulmod(const uint64_t *in, uint64_t *out,
     }
 }
 
-/* ---- Scalar ---- */
+/* ---- Scalar (inline asm umulh) ---- */
 static inline uint64_t umulh(uint64_t a, uint64_t b) {
     uint64_t r; __asm__ volatile("umulh %0, %1, %2" : "=r"(r) : "r"(a), "r"(b)); return r;
 }
@@ -233,6 +233,17 @@ static void scalar_mulmod(const uint64_t *in, uint64_t *out,
                           uint64_t op, uint64_t q, uint64_t p, int n) {
     for (int i = 0; i < n; i++) {
         uint64_t hi = umulh(in[i], q);
+        uint64_t lo = in[i] * op;
+        uint64_t r = lo - hi * p;
+        out[i] = (r >= p) ? r - p : r;
+    }
+}
+
+/* ---- Scalar (__uint128_t → umulh) ---- */
+static void scalar_u128_mulmod(const uint64_t *in, uint64_t *out,
+                               uint64_t op, uint64_t q, uint64_t p, int n) {
+    for (int i = 0; i < n; i++) {
+        uint64_t hi = (uint64_t)((unsigned __int128)in[i] * q >> 64);
         uint64_t lo = in[i] * op;
         uint64_t r = lo - hi * p;
         out[i] = (r >= p) ? r - p : r;
@@ -253,18 +264,19 @@ int main() {
 
     typedef void (*fn_t)(const uint64_t*, uint64_t*, uint64_t, uint64_t, uint64_t, int);
     struct { const char *name; fn_t fn; } tests[] = {
-        {"scalar (__umulh)",       scalar_mulmod},
-        {"SVE native (svmulh)",    sve_mulmod},
-        {"SVE32 (no interleave)",  sve32_mulmod},
-        {"SVE32 (2x interleave)",  sve32_2x_mulmod},
-        {"SVE32 (4x interleave)",  sve32_4x_mulmod},
+        {"scalar (inline asm)",       scalar_mulmod},
+        {"scalar (__uint128_t)",      scalar_u128_mulmod},
+        {"SVE native (svmulh)",       sve_mulmod},
+        {"SVE32 (no interleave)",     sve32_mulmod},
+        {"SVE32 (2x interleave)",      sve32_2x_mulmod},
+        {"SVE32 (4x interleave)",     sve32_4x_mulmod},
     };
 
     printf("=== Lazy Barrett mulmod benchmark ===\n");
     printf("    N_ELEMS=%d ITERS=%d VL=256bit(N=4) CPU=2.3GHz HIP12\n\n", N_ELEMS, ITERS);
 
     double base = 0;
-    for (int t = 0; t < 5; t++) {
+    for (int t = 0; t < 6; t++) {
         tests[t].fn(in, out, op, q, p, N_ELEMS); /* warmup */
         uint64_t t0 = cntvct();
         for (int j = 0; j < ITERS; j++)
@@ -278,10 +290,10 @@ int main() {
     /* correctness */
     uint64_t ref[N_ELEMS], v[N_ELEMS];
     scalar_mulmod(in, ref, op, q, p, N_ELEMS);
-    const char *names[] = {"", "", "SVE", "SVE32", "SVE32-2x"};
-    fn_t fns[] = {NULL, NULL, sve_mulmod, sve32_mulmod, sve32_2x_mulmod};
+    const char *names[] = {"", "", "SVE", "SVE32", "SVE32-2x", "SVE32-4x"};
+    fn_t fns[] = {NULL, NULL, sve_mulmod, sve32_mulmod, sve32_2x_mulmod, sve32_4x_mulmod};
     int ok = 1;
-    for (int t = 2; t < 5; t++) {
+    for (int t = 2; t < 6; t++) {
         fns[t](in, v, op, q, p, N_ELEMS);
         for (int i = 0; i < N_ELEMS; i++) {
             if (v[i] != ref[i]) { printf("    MISMATCH %s[%d]\n", names[t], i); ok=0; break; }
