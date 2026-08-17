@@ -104,6 +104,23 @@ static void scalar_schoolbook_mulmod(const uint64_t *in, uint64_t *out,
     }
 }
 
+// ---- Scalar inline asm (umulh) ----
+static inline uint64_t mulhi_asm(uint64_t a, uint64_t b) {
+    uint64_t r;
+    __asm__ volatile("umulh %0, %1, %2" : "=r"(r) : "r"(a), "r"(b));
+    return r;
+}
+
+static void scalar_asm_mulmod(const uint64_t *in, uint64_t *out,
+                              uint64_t op, uint64_t q, uint64_t p, int n) {
+    for (int i = 0; i < n; i++) {
+        uint64_t hi = mulhi_asm(in[i], q);
+        uint64_t lo = in[i] * op;
+        uint64_t r = lo - hi * p;
+        out[i] = (r >= p) ? r - p : r;
+    }
+}
+
 int main() {
     cpu_set_t cs; CPU_ZERO(&cs); CPU_SET(1, &cs);
     sched_setaffinity(0, sizeof(cs), &cs);
@@ -119,6 +136,7 @@ int main() {
     struct { const char *name; fn_t fn; } tests[] = {
         {"scalar schoolbook",      scalar_schoolbook_mulmod},
         {"scalar __uint128_t",      scalar_mulmod},
+        {"scalar inline asm",      scalar_asm_mulmod},
         {"AVX-512 schoolbook",     avx512_mulmod},
     };
 
@@ -126,7 +144,7 @@ int main() {
     printf("    N=%d ITERS=%d\n\n", N_ELEMS, ITERS);
 
     double base = 0;
-    for (int t = 0; t < 3; t++) {
+    for (int t = 0; t < 4; t++) {
         tests[t].fn(in, out, op, q, p, N_ELEMS);
         uint64_t t0 = cntvct();
         for (int j = 0; j < ITERS; j++)
@@ -142,6 +160,7 @@ int main() {
     uint64_t ref[N_ELEMS], v[N_ELEMS];
     scalar_mulmod(in, ref, op, q, p, N_ELEMS);
     avx512_mulmod(in, v, op, q, p, N_ELEMS);
+    scalar_asm_mulmod(in, v, op, q, p, N_ELEMS);
     int ok = 1;
     for (int i = 0; i < N_ELEMS; i++) if (v[i] != ref[i]) { ok = 0; break; }
     printf("\n    Correctness: %s\n", ok ? "ALL MATCH" : "FAILED");
