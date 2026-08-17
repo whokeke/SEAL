@@ -250,6 +250,49 @@ static void scalar_u128_mulmod(const uint64_t *in, uint64_t *out,
     }
 }
 
+/* ---- SVE native inline asm (umulh/mul/mls/cmpge/sub) ---- */
+static void sve_asm_mulmod(const uint64_t *in, uint64_t *out,
+                            uint64_t op, uint64_t q, uint64_t p, int n) {
+    int N = svcntd();
+    int i = 0;
+    for (; i + N <= n; i += N) {
+        __asm__ volatile(
+            "ptrue p0.d\n"
+            "ld1d  z0.d, p0/z, [%[in]]\n"
+            "dup   z1.d, %[q]\n"
+            "dup   z2.d, %[op]\n"
+            "dup   z3.d, %[p]\n"
+            /* hi = umulh(x, q) */
+            "mov   z4.d, z0.d\n"
+            "umulh z4.d, p0/m, z4.d, z1.d\n"
+            /* lo = mul(x, op) */
+            "mov   z5.d, z0.d\n"
+            "mul   z5.d, p0/m, z5.d, z2.d\n"
+            /* r = lo - p*hi */
+            "mls   z5.d, p0/m, z3.d, z4.d\n"
+            /* if (r >= p) r -= p */
+            "cmphs p1.d, p0/z, z5.d, z3.d\n"
+            "sub   z5.d, p1/m, z5.d, z3.d\n"
+            "st1d  z5.d, p0, [%[out]]\n"
+            :
+            : [in] "r"(in), [out] "r"(out), [q] "r"(q), [op] "r"(op), [p] "r"(p)
+            : "z0","z1","z2","z3","z4","z5","p0","p1","memory"
+        );
+        in += N; out += N;
+    }
+    /* tail */
+    if (i < n) {
+        svbool_t pg = svwhilelt_b64(i, n);
+        svuint64_t x = svld1_u64(pg, in);
+        svuint64_t hi = svmulh_u64_x(pg, x, svdup_n_u64(q));
+        svuint64_t lo = svmul_u64_x(pg, x, svdup_n_u64(op));
+        svuint64_t r  = svmls_u64_x(pg, lo, svdup_n_u64(p), hi);
+        svbool_t ge = svcmpge_u64(pg, r, svdup_n_u64(p));
+        r = svsub_u64_m(ge, r, svdup_n_u64(p));
+        svst1_u64(pg, out, r);
+    }
+}
+
 /* ---- Benchmark ---- */
 int main() {
     cpu_set_t cs; CPU_ZERO(&cs); CPU_SET(1, &cs);
@@ -266,7 +309,8 @@ int main() {
     struct { const char *name; fn_t fn; } tests[] = {
         {"scalar (inline asm)",       scalar_mulmod},
         {"scalar (__uint128_t)",      scalar_u128_mulmod},
-        {"SVE native (svmulh)",       sve_mulmod},
+        {"SVE native (intrinsic)",    sve_mulmod},
+        {"SVE native (inline asm)",   sve_asm_mulmod},
         {"SVE32 (no interleave)",     sve32_mulmod},
         {"SVE32 (2x interleave)",      sve32_2x_mulmod},
         {"SVE32 (4x interleave)",     sve32_4x_mulmod},
@@ -276,7 +320,7 @@ int main() {
     printf("    N_ELEMS=%d ITERS=%d VL=256bit(N=4) CPU=2.3GHz HIP12\n\n", N_ELEMS, ITERS);
 
     double base = 0;
-    for (int t = 0; t < 6; t++) {
+    for (int t = 0; t < 7; t++) {
         tests[t].fn(in, out, op, q, p, N_ELEMS); /* warmup */
         uint64_t t0 = cntvct();
         for (int j = 0; j < ITERS; j++)
@@ -290,10 +334,10 @@ int main() {
     /* correctness */
     uint64_t ref[N_ELEMS], v[N_ELEMS];
     scalar_mulmod(in, ref, op, q, p, N_ELEMS);
-    const char *names[] = {"", "", "SVE", "SVE32", "SVE32-2x", "SVE32-4x"};
-    fn_t fns[] = {NULL, NULL, sve_mulmod, sve32_mulmod, sve32_2x_mulmod, sve32_4x_mulmod};
+    const char *names[] = {"", "", "SVE", "SVE-asm", "SVE32", "SVE32-2x", "SVE32-4x"};
+    fn_t fns[] = {NULL, NULL, sve_mulmod, sve_asm_mulmod, sve32_mulmod, sve32_2x_mulmod, sve32_4x_mulmod};
     int ok = 1;
-    for (int t = 2; t < 6; t++) {
+    for (int t = 2; t < 7; t++) {
         fns[t](in, v, op, q, p, N_ELEMS);
         for (int i = 0; i < N_ELEMS; i++) {
             if (v[i] != ref[i]) { printf("    MISMATCH %s[%d]\n", names[t], i); ok=0; break; }
