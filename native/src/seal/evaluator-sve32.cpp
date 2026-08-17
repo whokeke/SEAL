@@ -26,22 +26,20 @@ namespace seal
     namespace
     {
         // SVE32 schoolbook: 64x64->high64 via 32-bit decomposition
-        // Uses SVE2 UMULLB/UMULLT for 32x32->64 widening multiply (inline asm)
+        // Uses SVE2 svmullb/svmullt ACLE intrinsics (32x32->64 widening)
         static inline svuint64_t sve32_mulhi_u64(svbool_t pg, svuint64_t a, svuint64_t b)
         {
             svuint32_t a32 = svreinterpret_u32_u64(a);
             svuint32_t b32 = svreinterpret_u32_u64(b);
-            svuint64_t p_ll, p_hh;
-            __asm__ __volatile__("umullb %0.d, %1.s, %2.s" : "=w"(p_ll) : "w"(a32), "w"(b32));
-            __asm__ __volatile__("umullt %0.d, %1.s, %2.s" : "=w"(p_hh) : "w"(a32), "w"(b32));
+            svuint64_t p_ll = svmullb_u64(a32, b32);
+            svuint64_t p_hh = svmullt_u64(a32, b32);
 
             svuint64_t a_hi = svlsr_n_u64_x(pg, a, 32);
             svuint64_t b_hi = svlsr_n_u64_x(pg, b, 32);
             svuint32_t a_hi32 = svreinterpret_u32_u64(a_hi);
             svuint32_t b_hi32 = svreinterpret_u32_u64(b_hi);
-            svuint64_t p_hl, p_lh;
-            __asm__ __volatile__("umullb %0.d, %1.s, %2.s" : "=w"(p_hl) : "w"(a_hi32), "w"(b32));
-            __asm__ __volatile__("umullb %0.d, %1.s, %2.s" : "=w"(p_lh) : "w"(a32), "w"(b_hi32));
+            svuint64_t p_hl = svmullb_u64(a_hi32, b32);
+            svuint64_t p_lh = svmullb_u64(a32, b_hi32);
 
             svuint64_t mask32 = svdup_n_u64(0xFFFFFFFF);
             svuint64_t mid = svadd_u64_x(pg, p_hl, p_lh);
