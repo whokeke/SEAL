@@ -114,3 +114,66 @@ LLVM 的窄向量化（vl2）是更优的策略：2 元素刚好用 128-bit，�
   --gcc-toolchain=/home/hukeke/spec/toolchains/gcc-15 \
   -o bench_4way_llvm22 bench_4way.c
 ```
+
+## 所有 Bench 文件编译命令
+
+### SVE intrinsic (sve/sve32/scalar + interleave 1x~8x)
+```bash
+gcc -O3 -march=armv9-a+sve2 -D_GNU_SOURCE -o bench_mulmod_intrinsic bench_mulmod_intrinsic.c
+taskset -c 1 ./bench_mulmod_intrinsic
+```
+
+### SVE inline asm (sve-native + scalar)
+```bash
+gcc -O3 -march=armv9-a+sve2 -D_GNU_SOURCE -o bench_mulmod_asm bench_mulmod_asm.c
+taskset -c 1 ./bench_mulmod_asm
+```
+
+### AVX-512 intrinsic (x86 only)
+```bash
+gcc -O3 -mavx512f -mavx512dq -D_GNU_SOURCE -o bench_mulmod_avx512_intrinsic bench_mulmod_avx512_intrinsic.c
+taskset -c 1 ./bench_mulmod_avx512_intrinsic
+```
+
+### AVX-512 + scalar asm (x86 only)
+```bash
+gcc -O3 -mavx512f -mavx512dq -D_GNU_SOURCE -o bench_mulmod_avx512_asm bench_mulmod_avx512_asm.c
+taskset -c 1 ./bench_mulmod_avx512_asm
+```
+
+### 标量 schoolbook vs __uint128_t vs inline asm
+```bash
+gcc -O3 -march=armv9-a -D_GNU_SOURCE -o bench_umulh_fix bench_umulh_fix.c
+taskset -c 1 ./bench_umulh_fix
+```
+
+### 4-way: GCC 15 vs LLVM 22 (4 变体对比)
+```bash
+# GCC 15
+/home/hukeke/spec/toolchains/gcc-15/bin/aarch64-unknown-linux-gnu-gcc \
+  -O3 -march=armv9-a+sve2 -D_GNU_SOURCE -o bench_4way_gcc15 bench_4way.c
+taskset -c 1 ./bench_4way_gcc15
+
+# LLVM 22
+/home/hukeke/spec/toolchains/LLVM-22.1.8-release/bin/clang \
+  -O3 -march=armv9-a+sve2 -D_GNU_SOURCE \
+  --gcc-toolchain=/home/hukeke/spec/toolchains/gcc-15 \
+  -o bench_4way_llvm22 bench_4way.c
+taskset -c 1 ./bench_4way_llvm22
+
+# 生成汇编
+... -S -o bench_4way_gcc15.s
+... -S -o bench_4way_llvm22.s
+```
+
+## 编译选项说明
+
+| 选项 | 说明 |
+|------|------|
+| `-O3` | 最高优化级别，启用自动向量化和循环展开 |
+| `-march=armv9-a+sve2` | 目标 ARMv9 + SVE2，启用 svmulh/svmullb/svmullt 指令 |
+| `-march=armv9-a` | 仅 SVE1（无 SVE2），用于纯标量 bench |
+| `-mavx512f -mavx512dq` | AVX-512（x86 only），启用 _mm512_mul_epu32 等 |
+| `-D_GNU_SOURCE` | 启用 CPU_SET/sched_setaffinity（绑核） |
+| `--gcc-toolchain=...` | LLVM 22 链接需要 GCC 的 libgcc/crt |
+| `-S` | 只生成汇编，不编译可执行文件 |
