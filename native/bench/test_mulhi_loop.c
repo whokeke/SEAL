@@ -1,14 +1,12 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <sched.h>
-#include <string.h>
 
 inline unsigned char add_uint64(uint64_t a, uint64_t b, uint64_t *result) {
     *result = a + b;
     return (unsigned char)(*result < a);
 }
 
-// 版本1: 手动 carry（LLVM 不识别 → schoolbook）
 static inline uint64_t mulhi_manual_carry(uint64_t a, uint64_t b) {
     uint64_t a_lo = a & 0xFFFFFFFF, a_hi = a >> 32;
     uint64_t b_lo = b & 0xFFFFFFFF, b_hi = b >> 32;
@@ -22,7 +20,6 @@ static inline uint64_t mulhi_manual_carry(uint64_t a, uint64_t b) {
     return p_hh + mid_hi + (carry1 << 32) + carry2;
 }
 
-// 版本2: add_uint64 carry（LLVM 识别 → umulh）
 static inline uint64_t mulhi_add_uint64(uint64_t a, uint64_t b) {
     uint64_t a_lo = a & 0xFFFFFFFF, a_hi = a >> 32;
     uint64_t b_lo = b & 0xFFFFFFFF, b_hi = b >> 32;
@@ -35,7 +32,6 @@ static inline uint64_t mulhi_add_uint64(uint64_t a, uint64_t b) {
     return left + (mid >> 32) + (temp_sum >> 32);
 }
 
-// 版本3: __uint128_t 参考
 static inline uint64_t mulhi_u128(uint64_t a, uint64_t b) {
     return (uint64_t)((unsigned __int128)a * b >> 64);
 }
@@ -45,58 +41,58 @@ static inline uint64_t mulhi_u128(uint64_t a, uint64_t b) {
 
 static inline uint64_t cntvct(void){ uint64_t v; __asm__ volatile("mrs %0, cntvct_el0":"=r"(v)); return v; }
 
-// volatile 防止 DCE
 volatile uint64_t sink;
+
+// 每个函数包含完整循环，noinline 确保独立编译
+__attribute__((noinline))
+void run_manual_carry(const uint64_t *in1, const uint64_t *in2, uint64_t *out, int n) {
+    for (int iter = 0; iter < ITERS; iter++)
+        for (int i = 0; i < n; i++)
+            out[i] = mulhi_manual_carry(in1[i], in2[i]);
+}
+
+__attribute__((noinline))
+void run_add_uint64(const uint64_t *in1, const uint64_t *in2, uint64_t *out, int n) {
+    for (int iter = 0; iter < ITERS; iter++)
+        for (int i = 0; i < n; i++)
+            out[i] = mulhi_add_uint64(in1[i], in2[i]);
+}
+
+__attribute__((noinline))
+void run_u128(const uint64_t *in1, const uint64_t *in2, uint64_t *out, int n) {
+    for (int iter = 0; iter < ITERS; iter++)
+        for (int i = 0; i < n; i++)
+            out[i] = mulhi_u128(in1[i], in2[i]);
+}
 
 int main() {
     cpu_set_t cs; CPU_ZERO(&cs); CPU_SET(1, &cs);
     sched_setaffinity(0, sizeof(cs), &cs);
 
-    static uint64_t in1[N], in2[N];
-    // 用大数确保 mulhi 结果非零
+    static uint64_t in1[N], in2[N], out[N];
     for (int i = 0; i < N; i++) { in1[i] = 0x123456789ABCDEF0ULL * (i+1); in2[i] = 0xFEDCBA9876543210ULL * (i+1); }
 
     printf("=== mulhi loop benchmark (N=%d, ITERS=%d) ===\n\n", N, ITERS);
 
-    uint64_t t0, t1, acc;
+    uint64_t t0, t1;
 
-    // manual carry
-    acc = 0;
-    t0 = cntvct();
-    for (int iter = 0; iter < ITERS; iter++)
-        for (int i = 0; i < N; i++)
-            acc ^= mulhi_manual_carry(in1[i], in2[i]);
-    t1 = cntvct();
-    sink = acc;
-    printf("  manual_carry  %7.3f cyc/elem  (sink=%lx)\n", (double)(t1-t0)*23.0/(ITERS*N), (unsigned long)acc);
+    t0 = cntvct(); run_manual_carry(in1, in2, out, N); t1 = cntvct();
+    sink = out[0] ^ out[N-1];
+    printf("  manual_carry  %7.3f cyc/elem\n", (double)(t1-t0)*23.0/(ITERS*N));
 
-    // add_uint64 carry
-    acc = 0;
-    t0 = cntvct();
-    for (int iter = 0; iter < ITERS; iter++)
-        for (int i = 0; i < N; i++)
-            acc ^= mulhi_add_uint64(in1[i], in2[i]);
-    t1 = cntvct();
-    sink = acc;
-    printf("  add_uint64    %7.3f cyc/elem  (sink=%lx)\n", (double)(t1-t0)*23.0/(ITERS*N), (unsigned long)acc);
+    t0 = cntvct(); run_add_uint64(in1, in2, out, N); t1 = cntvct();
+    sink = out[0] ^ out[N-1];
+    printf("  add_uint64    %7.3f cyc/elem\n", (double)(t1-t0)*23.0/(ITERS*N));
 
-    // __uint128_t
-    acc = 0;
-    t0 = cntvct();
-    for (int iter = 0; iter < ITERS; iter++)
-        for (int i = 0; i < N; i++)
-            acc ^= mulhi_u128(in1[i], in2[i]);
-    t1 = cntvct();
-    sink = acc;
-    printf("  __uint128_t   %7.3f cyc/elem  (sink=%lx)\n", (double)(t1-t0)*23.0/(ITERS*N), (unsigned long)acc);
+    t0 = cntvct(); run_u128(in1, in2, out, N); t1 = cntvct();
+    sink = out[0] ^ out[N-1];
+    printf("  __uint128_t   %7.3f cyc/elem\n", (double)(t1-t0)*23.0/(ITERS*N));
 
     // verify
     uint64_t r0 = mulhi_manual_carry(in1[0], in2[0]);
     uint64_t r1 = mulhi_add_uint64(in1[0], in2[0]);
     uint64_t r2 = mulhi_u128(in1[0], in2[0]);
-    printf("\n  verify: manual=%016lx add_u64=%016lx u128=%016lx %s\n",
-        (unsigned long)r0, (unsigned long)r1, (unsigned long)r2,
-        (r0==r1 && r1==r2) ? "MATCH" : "MISMATCH");
+    printf("\n  verify: %s\n", (r0==r1 && r1==r2) ? "MATCH" : "MISMATCH");
 
     return 0;
 }
